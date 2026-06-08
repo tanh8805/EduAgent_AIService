@@ -30,18 +30,18 @@ def store_database(postgres_uri: str, document_id: int, chunks: list, embeddings
         print(f"Error Store Document into database: {e}")
         return False
 
-def create_document(postgres_uri: str,user_id: int, filename):
+def create_document(postgres_uri: str, session_id: int, user_id: int, filename: str):
     try:
         conn = psycopg2.connect(postgres_uri)
         db = conn.cursor()
 
         query = """
-            INSERT INTO documents (user_id, title)
-            VALUES (%s, %s)
+            INSERT INTO documents (session_id, user_id, title)
+            VALUES (%s, %s, %s)
             RETURNING id;
         """
 
-        data = [user_id, filename]
+        data = [session_id, user_id, filename]
         db.execute(query, data)
         result = db.fetchone()
         doc_id = result[0]
@@ -55,9 +55,7 @@ def create_document(postgres_uri: str,user_id: int, filename):
         print(f"Error Store Document into database: {e}")
         return None
 
-
-def hybrid_search(postgres_uri: str, document_id: int, query_text: str, query_vector: list, top_k: int = 3) -> list:
-
+def hybrid_search(postgres_uri: str, session_id: int, query_text: str, query_vector: list, top_k: int = 3) -> list:
     if not query_vector or not query_text:
         print("Tham số query_vector hoặc query_text không được để trống.")
         return []
@@ -69,17 +67,19 @@ def hybrid_search(postgres_uri: str, document_id: int, query_text: str, query_ve
 
         query = """
             WITH semantic_branch AS (
-                SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> %s ASC) AS rank
-                FROM lessons
-                WHERE document_id = %s
-                ORDER BY embedding <=> %s ASC
+                SELECT l.id, ROW_NUMBER() OVER (ORDER BY l.embedding <=> %s ASC) AS rank
+                FROM lessons l
+                JOIN documents d ON l.document_id = d.id
+                WHERE d.session_id = %s
+                ORDER BY l.embedding <=> %s ASC
                 LIMIT 20
             ),
             keyword_branch AS (
-                SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', %s)) DESC) AS rank
-                FROM lessons
-                WHERE document_id = %s AND to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-                ORDER BY ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', %s)) DESC
+                SELECT l.id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(to_tsvector('english', l.content), plainto_tsquery('english', %s)) DESC) AS rank
+                FROM lessons l
+                JOIN documents d ON l.document_id = d.id
+                WHERE d.session_id = %s AND to_tsvector('english', l.content) @@ plainto_tsquery('english', %s)
+                ORDER BY ts_rank_cd(to_tsvector('english', l.content), plainto_tsquery('english', %s)) DESC
                 LIMIT 20
             )
             SELECT 
@@ -95,8 +95,8 @@ def hybrid_search(postgres_uri: str, document_id: int, query_text: str, query_ve
         """
 
         params = (
-            query_vector, document_id, query_vector,
-            query_text, document_id, query_text, query_text,
+            query_vector, session_id, query_vector,
+            query_text, session_id, query_text, query_text,
             top_k
         )
 
